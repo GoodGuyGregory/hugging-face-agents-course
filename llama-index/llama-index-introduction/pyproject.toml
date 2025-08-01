@@ -1,0 +1,12 @@
+[project]
+name = "llama-index-introduction"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "colorama>=0.4.6",
+    "llama-index-embeddings-huggingface>=0.6.0",
+    "llama-index-llms-huggingface-api>=0.6.0",
+    "python-dotenv>=1.1.1",
+]
