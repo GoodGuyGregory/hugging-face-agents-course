@@ -116,4 +116,203 @@ index = VectorStoreIndex.from_vector_store(vector_store, embed_model=embed_model
 our `index` is the vector store. The terminology can get fuzzy if you reference the documentation from Hugging Face's Agent's course. Ideally you would want to Query your index in a few different fashions there are a few listed on the documentation page.
 
 
-* `as_retriever`: 
+* `as_retriever`: for basic documentation retrieval. returns a `NodeScore` for each Node chunk similar
+* `as_query_engine`: Fore single question-answer interactions (single) with a written response
+* `as_chat_engine`: for conversational interactions that maintain memory across multiple messages, returning a written response using chat history.
+
+
+```python
+from llama_index.llms.huggingface_api import HuggingFaceInferenceAPI
+
+llm = HuggingFaceInferenceAPI(model_name="Qwen/Qwen2.5-Coder-32B-Instruct")
+query_engine = index.as_query_engine(
+    llm=llm,
+    response_mode="tree_summarize",
+)
+query_engine.query("What is the meaning of life?")
+# The meaning of life is 42
+```
+
+[RAG with Llama Index](https://huggingface.co/learn/agents-course/unit2/llama-index/components)
+
+## Creating Workflows
+
+`uv add llama-index-utils-workflow`
+
+Workflows have `StartEvents` and `StopEvents` that control when the progress of the agent is completed. each `step` in that process for the agent is highlighted with a `@step` annotation 
+
+**Basic Example**
+
+```python
+from llama_index.core.workflow import StartEvent, StopEvent, Workflow, step
+
+# create a WorkFlow Class with a single basic step
+class MyWorkflow(Workflow):
+    @step
+    async def my_step(self, ev: StartEvent) -> StopEvent:
+        # do something here
+        return StopEvent(result="Hello, world!")
+
+# define the workflow
+work_flow = MyWorkflow(timeout=10, verbose=False)
+# calling the workflow with run()
+result = await work_flow.run()
+```
+
+## Multi Step Workflows:
+
+### Simple Multi-Step
+
+each step in the workflow is given a specific type to determine if it's either the `StartEvent` or StartStep or in the case of a multi-step returns an `StopEvent`
+
+```python
+from llama_index.core.workflow import Event
+
+# define a class to hold the String of "Step 1 Complete"
+class ProcessingEvent(Event):
+    intermediate_result: str
+
+class MultiStepWorkflow(Workflow):
+    @step
+    async def step_one(self, ev: StartEvent) -> ProcessingEvent:
+        # Process initial data
+        return ProcessingEvent(intermediate_result="Step 1 complete")
+
+    @step
+    async def step_two(self, ev: ProcessingEvent) -> StopEvent:
+        # Use the intermediate result to return the str in the next step.
+        final_result = f"Finished processing: {ev.intermediate_result}"
+        return StopEvent(result=final_result)
+
+w = MultiStepWorkflow(timeout=10, verbose=False)
+result = await w.run()
+result
+```
+
+### Loop Stepping:
+
+loops are easy to create if you supply the pipe operator `|` in order to have some substance to hte LoopEvent we have added an attribute to the `LoopEvent` `loop_output`
+
+```python
+from llama_index.core.workflow import Event
+import random
+
+
+class ProcessingEvent(Event):
+    intermediate_result: str
+
+
+class LoopEvent(Event):
+    loop_output: str
+
+
+class MultiStepWorkflow(Workflow):
+    @step
+    async def step_one(self, ev: StartEvent | LoopEvent) -> ProcessingEvent | LoopEvent:
+        if random.randint(0, 1) == 0:
+            print("Bad thing happened")
+            return LoopEvent(loop_output="Back to step one.")
+        else:
+            print("Good thing happened")
+            return ProcessingEvent(intermediate_result="First step complete.")
+
+    @step
+    async def step_two(self, ev: ProcessingEvent) -> StopEvent:
+        # Use the intermediate result
+        final_result = f"Finished processing: {ev.intermediate_result}"
+        return StopEvent(result=final_result)
+
+
+w = MultiStepWorkflow(verbose=False)
+result = await w.run()
+result
+```
+
+### Visualizing your Workflows:
+
+just import the required `draw_all_possible_flows` and call it with the defined workflow.
+
+```python
+from llama_index.utils.workflow import draw_all_possible_flows
+
+w = MultiStepWorkflow(verbose=False)
+draw_all_possible_flows(w, "flow.html")
+```
+
+### Adding Context to your Steps:
+
+**State Management**
+
+State management is useful when you want to keep track of the state of the workflow, so that every step has access to the same state. We can do this by using the Context type hint on top of a parameter in the step function.
+
+```python
+from llama_index.core.workflow import Context, StartEvent, StopEvent
+
+@step
+async def query(self, ctx: Context, ev: StartEvent) -> StopEvent:
+    # store query in the context
+    await ctx.store.set("query", "What is the capital of France?")
+
+    # do something with context and event
+    val = ...
+
+    # retrieve query from the context
+    query = await ctx.store.get("query")
+
+    return StopEvent(result=val)
+```
+
+### AgentWorkFlow:
+
+`AgentWorkFlow` is another way to create a combination of multi-agents and agents and `root_agent` 
+
+```python
+workflow = AgentWorkflow(
+    agents=[multiply_agent, addition_agent],
+    root_agent="multiply_agent",
+    initial_state={"num_fn_calls": 0},
+    state_prompt="Current state: {state}. User message: {msg}",
+)
+```
+
+
+```python
+from llama_index.core.workflow import Context
+
+# Define some tools
+async def add(ctx: Context, a: int, b: int) -> int:
+    """Add two numbers."""
+    # update our count
+    cur_state = await ctx.store.get("state")
+    cur_state["num_fn_calls"] += 1
+    await ctx.store.set("state", cur_state)
+
+    return a + b
+
+async def multiply(ctx: Context, a: int, b: int) -> int:
+    """Multiply two numbers."""
+    # update our count
+    cur_state = await ctx.store.get("state")
+    cur_state["num_fn_calls"] += 1
+    await ctx.store.set("state", cur_state)
+
+    return a * b
+
+...
+
+workflow = AgentWorkflow(
+    agents=[multiply_agent, addition_agent],
+    root_agent="multiply_agent",
+    initial_state={"num_fn_calls": 0},
+    state_prompt="Current state: {state}. User message: {msg}",
+)
+
+# run the workflow with context
+ctx = Context(workflow)
+response = await workflow.run(user_msg="Can you add 5 and 3?", ctx=ctx)
+
+# pull out and inspect the state
+state = await ctx.store.get("state")
+print(state["num_fn_calls"])
+
+```
